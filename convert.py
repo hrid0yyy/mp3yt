@@ -59,10 +59,27 @@ def download_mp3(url: str, output_dir: str = "downloads") -> str:
         "noplaylist": True,
         "prefer_ffmpeg": True,
         "ffmpeg_location": ffmpeg_loc,
+        # Add headers to bypass hosting platform blocks
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-us,en;q=0.5",
+            "Accept-Encoding": "gzip,deflate",
+            "Accept-Charset": "ISO-8859-1,utf-8;q=0.7,*;q=0.7",
+            "Keep-Alive": "300",
+            "Connection": "keep-alive",
+        },
+        # Add cookies and other bypass options
+        "cookiefile": None,
+        "no_check_certificate": True,
+        "ignoreerrors": False,
+        "extract_flat": False,
+        # Force IPv4 (some hosting platforms have IPv6 issues)
+        "force_ipv4": True,
         "postprocessors": [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
         ],
-        "quiet": True,  # Reduce noise in Streamlit
+        "quiet": True,
         "no_warnings": True,
     }
 
@@ -71,7 +88,7 @@ def download_mp3(url: str, output_dir: str = "downloads") -> str:
             # First extract info to check if video is accessible
             info = ydl.extract_info(url, download=False)
             if not info:
-                raise RuntimeError("Could not extract video information")
+                raise RuntimeError("Could not extract video information. Video may be private, restricted, or blocked in your region.")
                 
             # Now download and convert
             info = ydl.extract_info(url, download=True)
@@ -97,7 +114,16 @@ def download_mp3(url: str, output_dir: str = "downloads") -> str:
 
             return final_mp3
     except Exception as e:
-        raise RuntimeError(f"MP3 conversion failed: {str(e)}") from e
+        # More specific error messages for hosting issues
+        error_str = str(e).lower()
+        if "403" in error_str or "forbidden" in error_str:
+            raise RuntimeError("Access denied - This may be due to hosting platform restrictions. YouTube blocks some cloud IPs. Try a different video or contact support.")
+        elif "429" in error_str:
+            raise RuntimeError("Rate limited - Too many requests. Please wait a moment and try again.")
+        elif "404" in error_str:
+            raise RuntimeError("Video not found - The video may have been deleted or is private.")
+        else:
+            raise RuntimeError(f"MP3 conversion failed: {str(e)}") from e
 
 def download_mp3_bytes(url: str, output_dir: str = "downloads"):
     """
