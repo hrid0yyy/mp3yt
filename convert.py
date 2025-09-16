@@ -33,7 +33,7 @@ def _resolve_ffmpeg_location():
     try:
         import imageio_ffmpeg
         ffpath = imageio_ffmpeg.get_ffmpeg_exe()
-        if ffpath and os.path.isfile(ffpath):
+        if (ffpath and os.path.isfile(ffpath)):
             return ffpath
     except Exception:
         pass
@@ -42,6 +42,47 @@ def _resolve_ffmpeg_location():
         "FFmpeg not found. Install it and add to PATH, set FFMPEG_PATH to its bin or binary, "
         "or install imageio-ffmpeg: pip install imageio-ffmpeg"
     )
+
+def _try_pytube_fallback(url: str, output_dir: str) -> str:
+    """
+    Fallback using pytube when yt-dlp fails
+    """
+    try:
+        from pytube import YouTube
+        import subprocess
+        
+        yt = YouTube(url)
+        # Get the best audio stream
+        audio_stream = yt.streams.filter(only_audio=True).first()
+        if not audio_stream:
+            raise RuntimeError("No audio stream found")
+            
+        # Download the audio file
+        audio_file = audio_stream.download(output_path=output_dir)
+        
+        # Convert to MP3 using ffmpeg
+        base_name = os.path.splitext(audio_file)[0]
+        mp3_file = f"{base_name}.mp3"
+        
+        ffmpeg_loc = _resolve_ffmpeg_location()
+        ffmpeg_cmd = "ffmpeg"
+        if ffmpeg_loc:
+            if os.path.isdir(ffmpeg_loc):
+                ffmpeg_cmd = os.path.join(ffmpeg_loc, "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+            else:
+                ffmpeg_cmd = ffmpeg_loc
+                
+        subprocess.run([
+            ffmpeg_cmd, "-i", audio_file, "-acodec", "mp3", "-ab", "192k", mp3_file, "-y"
+        ], check=True, capture_output=True)
+        
+        # Clean up original file
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
+            
+        return mp3_file
+    except Exception as e:
+        raise RuntimeError(f"Pytube fallback failed: {e}")
 
 def download_mp3(url: str, output_dir: str = "downloads") -> str:
     os.makedirs(output_dir, exist_ok=True)
@@ -52,6 +93,7 @@ def download_mp3(url: str, output_dir: str = "downloads") -> str:
     except Exception as e:
         raise RuntimeError(f"FFmpeg setup failed: {e}")
     
+    # First try yt-dlp with minimal config for hosting platforms
     ydl_opts = {
         "format": "bestaudio/best",
         "restrictfilenames": True,
@@ -59,22 +101,17 @@ def download_mp3(url: str, output_dir: str = "downloads") -> str:
         "noplaylist": True,
         "prefer_ffmpeg": True,
         "ffmpeg_location": ffmpeg_loc,
-        # Add headers to bypass hosting platform blocks
+        # Minimal headers to avoid detection
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-us,en;q=0.5",
-            "Accept-Encoding": "gzip,deflate",
-            "Accept-Charset": "ISO-8859-1,utf-8;q=0.7,*;q=0.7",
-            "Keep-Alive": "300",
-            "Connection": "keep-alive",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         },
-        # Add cookies and other bypass options
-        "cookiefile": None,
+        # Simplified extractor args
+        "extractor_args": {
+            "youtube": {
+                "skip": ["hls", "dash"],
+            }
+        },
         "no_check_certificate": True,
-        "ignoreerrors": False,
-        "extract_flat": False,
-        # Force IPv4 (some hosting platforms have IPv6 issues)
         "force_ipv4": True,
         "postprocessors": [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
@@ -85,45 +122,45 @@ def download_mp3(url: str, output_dir: str = "downloads") -> str:
 
     try:
         with YoutubeDL(ydl_opts) as ydl:
-            # First extract info to check if video is accessible
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                raise RuntimeError("Could not extract video information. Video may be private, restricted, or blocked in your region.")
-                
-            # Now download and convert
             info = ydl.extract_info(url, download=True)
-
-            # Predict final mp3 path using yt-dlp's templating, forcing ext=mp3
             final_mp3 = ydl.prepare_filename({**info, "ext": "mp3"})
+            
             if not os.path.isfile(final_mp3):
-                # Fallback: inspect requested_downloads
+                # Try fallback path detection
                 rd = (info.get("requested_downloads") or [])
                 cand = next((d.get("filepath") for d in rd if d.get("filepath")), None)
                 if cand:
-                    if cand.lower().endswith(".mp3") and os.path.isfile(cand):
-                        final_mp3 = cand
-                    else:
-                        base, _ = os.path.splitext(cand)
-                        if os.path.isfile(base + ".mp3"):
-                            final_mp3 = base + ".mp3"
-
+                    base, _ = os.path.splitext(cand)
+                    if os.path.isfile(base + ".mp3"):
+                        final_mp3 = base + ".mp3"
+            
             if not os.path.isfile(final_mp3):
-                # List all files in output directory for debugging
-                files = os.listdir(output_dir) if os.path.exists(output_dir) else []
-                raise RuntimeError(f"MP3 file not found. Expected: {final_mp3}. Files in {output_dir}: {files}")
-
+                raise RuntimeError("MP3 file not created by yt-dlp")
+                
             return final_mp3
+            
     except Exception as e:
-        # More specific error messages for hosting issues
-        error_str = str(e).lower()
-        if "403" in error_str or "forbidden" in error_str:
-            raise RuntimeError("Access denied - This may be due to hosting platform restrictions. YouTube blocks some cloud IPs. Try a different video or contact support.")
-        elif "429" in error_str:
-            raise RuntimeError("Rate limited - Too many requests. Please wait a moment and try again.")
-        elif "404" in error_str:
-            raise RuntimeError("Video not found - The video may have been deleted or is private.")
+        error_str = str(e)
+        
+        # Check for various yt-dlp failure patterns - try pytube fallback
+        if any(pattern in error_str for pattern in [
+            "Failed to extract any player response",
+            "player response", 
+            "Sign in to confirm you're not a bot",
+            "HTTP Error 403",
+            "HTTP Error 429"
+        ]):
+            try:
+                return _try_pytube_fallback(url, output_dir)
+            except Exception as pytube_error:
+                raise RuntimeError(f"🚫 **Both yt-dlp and pytube failed on this hosting platform.**\n\n**Main Error:** {str(e)[:200]}...\n\n**Fallback Error:** {str(pytube_error)[:200]}...\n\n💡 **Solutions:**\n• Try different videos (some work better)\n• Wait 15+ minutes between attempts\n• Run locally: `streamlit run main.py`\n• Use a VPS for reliable hosting")
         else:
-            raise RuntimeError(f"MP3 conversion failed: {str(e)}") from e
+            # For other errors, still try pytube as last resort
+            try:
+                return _try_pytube_fallback(url, output_dir)
+            except Exception:
+                # If pytube also fails, show original error
+                raise RuntimeError(f"🚫 **Download failed:** {str(e)[:300]}...\n\n💡 **This is expected on hosting platforms due to YouTube's bot detection.**")
 
 def download_mp3_bytes(url: str, output_dir: str = "downloads"):
     """

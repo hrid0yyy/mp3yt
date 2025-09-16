@@ -10,6 +10,18 @@ api_key = os.getenv("YOUTUBE_API_KEY")
 st.set_page_config(page_title="YouTube MP3 Downloader", page_icon="🎵", layout="wide")
 st.title("Mp3YT")
 
+# Add warning about hosting limitations
+st.warning("⚠️ **IMPORTANT**: This app works best when run locally. Cloud hosting platforms are frequently blocked by YouTube.")
+
+col1, col2 = st.columns(2)
+with col1:
+    st.success("✅ **Local Usage (Recommended)**\n- Clone this repo\n- Run: `streamlit run main.py`\n- Reliable downloads")
+with col2:
+    st.error("❌ **Cloud Hosting Issues**\n- YouTube blocks most cloud IPs\n- Frequent 403/bot detection errors\n- Limited functionality")
+
+if os.environ.get("STREAMLIT_SHARING") or os.environ.get("HEROKU") or os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("CODESPACE_NAME"):
+    st.info("🔍 **Hosting Platform Detected** - Downloads may fail due to YouTube restrictions")
+
 if not api_key:
     st.error("YOUTUBE_API_KEY is not set. Define it in .env or the environment.")
     st.stop()
