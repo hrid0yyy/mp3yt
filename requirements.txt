@@ -2,3 +2,4 @@ streamlit
 yt-dlp
 dotenv
 requests
+imageio-ffmpeg
